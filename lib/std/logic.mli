@@ -50,6 +50,9 @@ module type S = sig
 
     include Comparator.S with type t := t
 
+    type set = (t, comparator_witness) Set.t
+    (** Type of set of literals. *)
+
     (** {1 Constructors and destructors} *)
 
     val atom : t -> atom
@@ -68,9 +71,8 @@ module type S = sig
 
     (** {1 Comparison} *)
 
-    val is_positive : t -> bool
-    (** [is_positive lit] is [true] if and only if the literal [lit] is
-        positive. *)
+    val sign : t -> bool
+    (** [sign lit] is [true] if and only if the literal [lit] is positive. *)
 
     val compare : t -> t -> int
     (** [compare lit1 lit2] compares the literals [lit1] and [lit2]. *)
@@ -131,12 +133,23 @@ module type S = sig
     (** [size cla] computes the size of the clause [cla],
         that is the number of literals. *)
 
+    (** {1 Comparison and tests} *)
+
     val compare : t -> t -> int
     (** [compare cla1 cla2] compares the clauses [cla1] and [cla2]. *)
 
     val equal : t -> t -> bool
     (** [equal cla1 cla2] tests the equality of the clauses [cla1] and
         [cla2]. *)
+
+    val is_sat : ass:Literal.set -> t -> bool
+    (** [is_sat ~ass cla] returns [true] if the clause [cla] is satisfy by
+        the assignement [ass]. *)
+
+    val unit_lit : ass:Literal.set -> t -> literal option
+    (** If [cla] is a unitary clause, [unit_lit ~ass cla] returns the only
+        literal of [cla] who is not satisfied by the assignement [ass].
+        Otherwise, the function returns [None]. *)
 
     (** {1 Printing} *)
 
@@ -271,6 +284,8 @@ module type S = sig
         [form]. *)
 
     val literals : t -> literal list
+    (** [literal form] returns the list of the literals appearing in the
+        formula [form]. *)
 
     val subformulae : t -> t list
     (** [subformulae form] returns a list of the subformulae of [form].
@@ -283,7 +298,6 @@ module type S = sig
 
     val cnf : t -> cnf
     (** [cnf form] returns a conjunctive normal form of the formula [form]. *)
-
 
     (** {1 Comparison and tests} *)
 

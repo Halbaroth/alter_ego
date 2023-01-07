@@ -27,11 +27,13 @@ module type S = sig
 
     include Comparator.S with type t := t
 
+    type set = (t, comparator_witness) Set.t
+
     val atom : t -> atom
     val sexp_of_t : t -> Sexplib0.Sexp.t
     val not_ : t -> t
     val of_atom : atom -> t
-    val is_positive : t -> bool
+    val sign : t -> bool
     val compare : t -> t -> int
     val equal : t -> t -> bool
     val pp : t Fmt.t
@@ -40,6 +42,7 @@ module type S = sig
 
   module Clause : sig
     type t
+
     include Comparator.S with type t := t
 
     val literals : t -> literal list
@@ -53,6 +56,8 @@ module type S = sig
     val size : t -> int
     val compare : t -> t -> int
     val equal : t -> t -> bool
+    val is_sat : ass:Literal.set -> t -> bool
+    val unit_lit : ass:Literal.set -> t -> literal option
     val pp : t Fmt.t
     val show : t -> string
   end
@@ -115,17 +120,20 @@ module Make (A : Atom) = struct
     module T = struct
       type t = Atom.t * bool [@@deriving compare, equal, sexp_of]
     end
+
     include T
     include Comparator.Make (T)
 
+    type set = (t, comparator_witness) Set.t
+
     let not_ (v, b) = (v, not b)
     let atom (v, _) = v
-    let is_positive (_, b) = b
+    let sign (_, b) = b
     let of_atom v = (v, true)
 
     let pp fmt = function
-      | (v, true) -> Fmt.pf fmt "%a" Atom.pp v
-      | (v, false) -> Fmt.pf fmt "¬%a" Atom.pp v
+      | v, true -> Fmt.pf fmt "%a" Atom.pp v
+      | v, false -> Fmt.pf fmt "¬%a" Atom.pp v
 
     let show = Util.show_of_pp pp
   end
@@ -137,6 +145,7 @@ module Make (A : Atom) = struct
       let compare = Set.compare_m__t (module Literal)
       let sexp_of_t = Set.sexp_of_m__t (module Literal)
     end
+
     include T
     include Comparator.Make (T)
 
@@ -147,20 +156,46 @@ module Make (A : Atom) = struct
     let or_ = Set.union
     let or_list = Set.union_list (module Literal)
     let literals = Set.to_list
+
     let atoms cla =
-      List.fold_left (literals cla) ~init:(Set.empty (module Atom))
+      List.fold_left (literals cla)
+        ~init:(Set.empty (module Atom))
         ~f:(fun acc lit -> Set.add acc (Literal.atom lit))
       |> Set.to_list
 
     let compare cla1 cla2 = Set.compare_m__t (module Literal) cla1 cla2
     let equal cla1 cla2 = Set.equal_m__t (module Literal) cla1 cla2
 
+    let is_sat ~ass cla =
+      Set.for_all cla ~f:(fun lit1 ->
+          match
+            Set.find ass ~f:(fun lit2 ->
+                Atom.equal (Literal.atom lit1) (Literal.atom lit2))
+          with
+          | Some lit2 -> Bool.equal (Literal.sign lit1) (Literal.sign lit2)
+          | None -> false)
+
+    let unit_lit ~ass cla =
+      Set.fold_until cla ~init:None
+        ~finish:(fun x -> x)
+        ~f:(fun acc lit1 ->
+          let lit_with_same_atom =
+            Set.find ass ~f:(fun lit2 ->
+                Atom.equal (Literal.atom lit1) (Literal.atom lit2))
+          in
+          match (acc, lit_with_same_atom) with
+          | _, Some lit2 when Bool.equal (Literal.sign lit1) (Literal.sign lit2)
+            ->
+              Continue acc
+          | _, Some _ -> Stop None
+          | None, None -> Continue (Some lit1)
+          | Some _, None -> Stop None)
+
     let pp fmt cla =
       let sep fmt () = Fmt.pf fmt "∨" in
       Fmt.list ~sep Literal.pp fmt (Set.to_list cla)
 
     let show cla = Util.show_of_pp pp cla
-
     let size = Set.length
   end
 
@@ -169,8 +204,8 @@ module Make (A : Atom) = struct
 
     let of_clause = Set.singleton (module Clause)
     let of_clauses = Set.of_list (module Clause)
-
     let top = Set.empty (module Clause)
+
     let bottom =
       let a = Atom.fresh () |> Literal.of_atom in
       let b = Literal.not_ a in
@@ -179,39 +214,37 @@ module Make (A : Atom) = struct
     let atom v = Clause.of_atom v |> of_clause
     let and_ = Base.Set.union
     let and_list = Base.Set.union_list (module Clause)
-
     let clauses = Set.to_list
-    let add_clause cla p = Set.add p cla
-    let literals p = Clause.or_list (clauses p) |> Clause.literals
+    let add_clause cla cnf = Set.add cnf cla
+    let literals cnf = Clause.or_list (clauses cnf) |> Clause.literals
 
-    let atoms p =
-      List.fold_left (literals p) ~init:(Set.empty (module Atom))
+    let atoms cnf =
+      List.fold_left (literals cnf)
+        ~init:(Set.empty (module Atom))
         ~f:(fun acc lit -> Set.add acc (Literal.atom lit))
       |> Set.to_list
 
-    let lit_is_pure p lit =
-      not @@ Set.exists p ~f:(Clause.contains lit)
-      && not @@ Set.exists p ~f:(Clause.contains (Literal.not_ lit))
+    let lit_is_pure cnf lit =
+      (not @@ Set.exists cnf ~f:(Clause.contains lit))
+      && (not @@ Set.exists cnf ~f:(Clause.contains (Literal.not_ lit)))
 
-    let is_pure p = List.for_all (literals p) ~f:(lit_is_pure p)
+    let is_pure cnf = List.for_all (literals cnf) ~f:(lit_is_pure cnf)
+    let compare cnf1 cnf2 = Set.compare_m__t (module Clause) cnf1 cnf2
+    let equal cnf1 cnf2 = Set.equal_m__t (module Clause) cnf1 cnf2
 
-    let compare p1 p2 = Set.compare_m__t (module Clause) p1 p2
-    let equal p1 p2 = Set.equal_m__t (module Clause) p1 p2
-
-    let pp fmt p =
+    let pp fmt cnf =
       let sep fmt () = Fmt.pf fmt " ∧ " in
       let pp_clause fmt cla =
-        if Clause.size cla > 1 then
-          Fmt.pf fmt "(%a)" Clause.pp cla
+        if Clause.size cla > 1 then Fmt.pf fmt "(%a)" Clause.pp cla
         else Clause.pp fmt cla
       in
-      Fmt.list ~sep pp_clause fmt (Set.to_list p)
+      Fmt.list ~sep pp_clause fmt (Set.to_list cnf)
 
     let show cla = Util.show_of_pp pp cla
 
-    let size p =
-      Set.fold p ~init:0 ~f:(fun acc cla -> acc + Clause.size cla)
-      + Set.length p
+    let size cnf =
+      Set.fold cnf ~init:0 ~f:(fun acc cla -> acc + Clause.size cla)
+      + Set.length cnf
   end
 
   module Formula = struct
@@ -223,31 +256,27 @@ module Make (A : Atom) = struct
       | Not_ of form
     [@@deriving compare, equal, sexp_of]
 
-    type t =
-      | Top
-      | Bottom
-      | Form of form
-    [@@deriving compare, equal, sexp_of]
+    type t = Top | Bottom | Form of form [@@deriving compare, equal, sexp_of]
 
     let top = Top
     let bottom = Bottom
 
     let and_ p1 p2 =
-      match p1, p2 with
+      match (p1, p2) with
       | Top, _ -> p2
       | _, Top -> p1
       | Bottom, _ | _, Bottom -> bottom
       | Form q1, Form q2 -> Form (And_ (q1, q2))
 
     let or_ p1 p2 =
-      match p1, p2 with
+      match (p1, p2) with
       | Bottom, _ -> p2
       | _, Bottom -> p1
       | Top, _ | _, Top -> Top
       | Form q1, Form q2 -> Form (Or_ (q1, q2))
 
     let imply p1 p2 =
-      match p1, p2 with
+      match (p1, p2) with
       | Bottom, _ -> Top
       | _, Bottom -> p1
       | Top, _ -> p2
@@ -276,24 +305,21 @@ module Make (A : Atom) = struct
           Fmt.pf fmt "(%a) ∧ %a" pp_form p1 pp_form p2
       | And_ (p1, p2) when is_leaf p1 ->
           Fmt.pf fmt "%a ∧ (%a)" pp_form p1 pp_form p2
-      | And_ (p1, p2) ->
-          Fmt.pf fmt "(%a) ∧ (%a)" pp_form p1 pp_form p2
+      | And_ (p1, p2) -> Fmt.pf fmt "(%a) ∧ (%a)" pp_form p1 pp_form p2
       | Or_ (p1, p2) when is_leaf p1 && is_leaf p2 ->
           Fmt.pf fmt "%a ∨ %a" pp_form p1 pp_form p2
       | Or_ (p1, p2) when is_leaf p2 ->
           Fmt.pf fmt "(%a) ∨ %a" pp_form p1 pp_form p2
       | Or_ (p1, p2) when is_leaf p1 ->
           Fmt.pf fmt "%a ∨ (%a)" pp_form p1 pp_form p2
-      | Or_ (p1, p2) ->
-          Fmt.pf fmt "(%a) ∨ (%a)" pp_form p1 pp_form p2
+      | Or_ (p1, p2) -> Fmt.pf fmt "(%a) ∨ (%a)" pp_form p1 pp_form p2
       | Imply (p1, p2) when is_leaf p1 && is_leaf p2 ->
           Fmt.pf fmt "%a ⇒ %a" pp_form p1 pp_form p2
       | Imply (p1, p2) when is_leaf p2 ->
           Fmt.pf fmt "(%a) ⇒ %a" pp_form p1 pp_form p2
       | Imply (p1, p2) when is_leaf p1 ->
           Fmt.pf fmt "%a ⇒ (%a)" pp_form p1 pp_form p2
-      | Imply (p1, p2) ->
-          Fmt.pf fmt "(%a) ⇒ (%a)" pp_form p1 pp_form p2
+      | Imply (p1, p2) -> Fmt.pf fmt "(%a) ⇒ (%a)" pp_form p1 pp_form p2
       | Not_ p when is_leaf p -> Fmt.pf fmt "¬%a" pp_form p
       | Not_ p -> Fmt.pf fmt "¬(%a)" pp_form p
 
@@ -304,7 +330,7 @@ module Make (A : Atom) = struct
 
     let nnf =
       let rec nnf_of_form = function
-        |  Atom _ | Not_ (Atom _) as p -> p
+        | (Atom _ | Not_ (Atom _)) as p -> p
         | And_ (p1, p2) ->
             let p1 = nnf_of_form p1 in
             let p2 = nnf_of_form p2 in
@@ -313,32 +339,30 @@ module Make (A : Atom) = struct
             let p1 = nnf_of_form p1 in
             let p2 = nnf_of_form p2 in
             Or_ (p1, p2)
-        | Imply (p1, p2) -> nnf_of_form (Or_ ((Not_ p1), p2))
+        | Imply (p1, p2) -> nnf_of_form (Or_ (Not_ p1, p2))
         | Not_ (Or_ (p1, p2)) -> nnf_of_form (And_ (Not_ p1, Not_ p2))
         | Not_ (And_ (p1, p2)) -> nnf_of_form (Or_ (Not_ p1, Not_ p2))
-        | Not_ (Imply (p1, p2)) -> nnf_of_form (And_ (p1, (Not_ p2)))
+        | Not_ (Imply (p1, p2)) -> nnf_of_form (And_ (p1, Not_ p2))
         | Not_ (Not_ p1) -> nnf_of_form p1
-      in function
-      | Top | Bottom as p -> p
-      | Form f -> Form (nnf_of_form f)
+      in
+      function (Top | Bottom) as p -> p | Form f -> Form (nnf_of_form f)
 
     let show = Util.show_of_pp pp
 
     let atoms =
       let rec atoms_of_form = function
-        | Atom v -> [v]
+        | Atom v -> [ v ]
         | Not_ p -> atoms_of_form p
         | And_ (p1, p2) -> atoms_of_form p1 @ atoms_of_form p2
         | Or_ (p1, p2) -> atoms_of_form p1 @ atoms_of_form p2
         | Imply (p1, p2) -> atoms_of_form p1 @ atoms_of_form p2
-      in function
-      | Top | Bottom -> []
-      | Form f -> atoms_of_form f
+      in
+      function Top | Bottom -> [] | Form f -> atoms_of_form f
 
     let literals =
       let rec literals_of_form is_pos = function
-        | Atom v when is_pos -> [Literal.of_atom v]
-        | Atom v -> [Literal.(not_ (of_atom v))]
+        | Atom v when is_pos -> [ Literal.of_atom v ]
+        | Atom v -> [ Literal.(not_ (of_atom v)) ]
         | Not_ p -> literals_of_form (not is_pos) p
         | And_ (p1, p2) ->
             literals_of_form is_pos p1 @ literals_of_form is_pos p2
@@ -346,15 +370,14 @@ module Make (A : Atom) = struct
             literals_of_form is_pos p1 @ literals_of_form is_pos p2
         | Imply (p1, p2) ->
             literals_of_form (not is_pos) p1 @ literals_of_form is_pos p2
-      in function
-      | Top | Bottom -> []
-      | Form f -> literals_of_form true f
+      in
+      function Top | Bottom -> [] | Form f -> literals_of_form true f
 
     let lit_is_pure p =
       let literals = literals p in
       fun lit ->
-        not @@ List.mem literals lit ~equal:Literal.equal
-        && not @@ List.mem literals (Literal.not_ lit) ~equal:Literal.equal
+        (not @@ List.mem literals lit ~equal:Literal.equal)
+        && (not @@ List.mem literals (Literal.not_ lit) ~equal:Literal.equal)
 
     let is_pure p = List.for_all (literals p) ~f:(lit_is_pure p)
 
@@ -364,56 +387,58 @@ module Make (A : Atom) = struct
         | Not_ p -> 1 + depth_of_form p
         | And_ (p1, p2) | Or_ (p1, p2) | Imply (p1, p2) ->
             1 + Int.max (depth_of_form p1) (depth_of_form p2)
-      in function
-      | Top | Bottom -> 0
-      | Form f -> depth_of_form f
+      in
+      function Top | Bottom -> 0 | Form f -> depth_of_form f
 
     let size =
       let rec size_of_form = function
-      | Atom _ -> 1
-      | Not_ p -> 1 + size_of_form p
-      | And_ (p1, p2) | Or_ (p1, p2) | Imply (p1, p2) ->
-          1 + size_of_form p1 + size_of_form p2
-      in function
-      | Top | Bottom -> 1
-      | Form f -> size_of_form f
+        | Atom _ -> 1
+        | Not_ p -> 1 + size_of_form p
+        | And_ (p1, p2) | Or_ (p1, p2) | Imply (p1, p2) ->
+            1 + size_of_form p1 + size_of_form p2
+      in
+      function Top | Bottom -> 1 | Form f -> size_of_form f
 
     (* TODO: Optimize it *)
     let subformulae =
       let rec subformulae_of_form acc p =
         match p with
         | Atom _ -> Form p :: acc
-        | Not_ q -> Form p :: (subformulae_of_form acc q)
+        | Not_ q -> Form p :: subformulae_of_form acc q
         | And_ (q1, q2) | Or_ (q1, q2) | Imply (q1, q2) ->
-            Form p :: ((subformulae_of_form acc q1)
-            @ (subformulae_of_form acc q2))
-      in function
-      | Top | Bottom as p -> [p]
-      | Form f -> subformulae_of_form [] f
+            Form p :: (subformulae_of_form acc q1 @ subformulae_of_form acc q2)
+      in
+      function
+      | (Top | Bottom) as p -> [ p ] | Form f -> subformulae_of_form [] f
 
     let and_list px = List.fold_left px ~init:Top ~f:and_
-
     let or_list px = List.fold_left px ~init:Bottom ~f:or_
 
     let cnf =
       let and_gate, or_gate, not_gate =
-        (fun w z1 z2 ->
-          Cnf.of_clauses Clause.[
-            of_literals [Literal.not_ z1; Literal.not_ z2; w];
-            of_literals [z1; Literal.not_ w];
-            of_literals [z2; Literal.not_ w];
-          ]),
-        (fun w z1 z2 ->
-          Cnf.of_clauses Clause.[
-            of_literals [z1; z2; Literal.not_ w];
-            of_literals [Literal.not_ z1; w];
-            of_literals [Literal.not_ z2; w];
-          ]),
-        (fun w z ->
-          Cnf.of_clauses Clause.[
-            of_literals [Literal.not_ z; Literal.not_ w];
-            of_literals [z; w]
-          ])
+        ( (fun w z1 z2 ->
+            Cnf.of_clauses
+              Clause.
+                [
+                  of_literals [ Literal.not_ z1; Literal.not_ z2; w ];
+                  of_literals [ z1; Literal.not_ w ];
+                  of_literals [ z2; Literal.not_ w ];
+                ]),
+          (fun w z1 z2 ->
+            Cnf.of_clauses
+              Clause.
+                [
+                  of_literals [ z1; z2; Literal.not_ w ];
+                  of_literals [ Literal.not_ z1; w ];
+                  of_literals [ Literal.not_ z2; w ];
+                ]),
+          fun w z ->
+            Cnf.of_clauses
+              Clause.
+                [
+                  of_literals [ Literal.not_ z; Literal.not_ w ];
+                  of_literals [ z; w ];
+                ] )
       in
       let rec cnf_of_form acc w = function
         | Atom a -> Cnf.(add_clause (Clause.of_atom a)) acc
@@ -433,9 +458,13 @@ module Make (A : Atom) = struct
             let z1 = Atom.fresh () |> Literal.of_atom in
             let z2 = Atom.fresh () |> Literal.of_atom in
             let gate = and_gate w z1 z2 in
-            Cnf.(and_ gate (and_ (cnf_of_form acc z1 q1) (cnf_of_form acc z2 q2)))
+            Cnf.(
+              and_ gate (and_ (cnf_of_form acc z1 q1) (cnf_of_form acc z2 q2)))
         | Or_ (Atom a1, Atom a2) ->
-            Cnf.(add_clause (Clause.of_literals [Literal.of_atom a1; Literal.of_atom a2])) acc
+            Cnf.(
+              add_clause
+                (Clause.of_literals [ Literal.of_atom a1; Literal.of_atom a2 ]))
+              acc
         | Or_ (Atom a, q) ->
             let z = Atom.fresh () |> Literal.of_atom in
             let gate = or_gate w (Literal.of_atom a) z in
@@ -448,7 +477,8 @@ module Make (A : Atom) = struct
             let z1 = Atom.fresh () |> Literal.of_atom in
             let z2 = Atom.fresh () |> Literal.of_atom in
             let gate = or_gate w z1 z2 in
-            Cnf.(and_ gate (and_ (cnf_of_form acc z1 q1) (cnf_of_form acc z2 q2)))
+            Cnf.(
+              and_ gate (and_ (cnf_of_form acc z1 q1) (cnf_of_form acc z2 q2)))
         | Imply (p, q) -> cnf_of_form acc w (Or_ (Not_ p, q))
         | Not_ (Atom a) ->
             let gate = Literal.(not_ (of_atom a)) |> Clause.of_literal in
@@ -457,7 +487,8 @@ module Make (A : Atom) = struct
             let z = Atom.fresh () |> Literal.of_atom in
             let gate = not_gate w z in
             Cnf.and_ gate (cnf_of_form acc z p)
-      in function
+      in
+      function
       | Top -> Cnf.top
       | Bottom -> Cnf.bottom
       | Form f -> cnf_of_form Cnf.top (Atom.fresh () |> Literal.of_atom) f

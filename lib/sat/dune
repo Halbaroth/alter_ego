@@ -1,5 +1,5 @@
 (library
  (name alter_ego__sat)
- (libraries alter_ego__std alter_ego__ast ppx_deriving.runtime sexplib fmt)
+ (libraries alter_ego__std alter_ego__logic ppx_deriving.runtime sexplib fmt)
  (preprocess
   (pps ppx_deriving.make ppx_deriving.show ppx_sexp_conv ppx_compare)))

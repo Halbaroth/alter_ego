@@ -335,5 +335,3 @@ module type S = sig
     (** [show form] produces a representative string of the formula [form]. *)
   end
 end
-
-module Make (A : Atom) : S with type atom = A.t

@@ -4,7 +4,7 @@ module type S = sig
   type t
   (** Type of the context of the DPLL solver. *)
 
-  module Logic : Alter_ego__ast.Logic.S
+  module Logic : Alter_ego__logic.Intf.S
 
   type status = Unsat | Sat
 

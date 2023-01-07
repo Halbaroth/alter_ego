@@ -1,6 +1,6 @@
 open Base
 
-module Make (Logic : Alter_ego__ast.Logic.S) = struct
+module Make (Logic : Alter_ego__logic.Intf.S) = struct
   open Logic
 
   type t = Literal.set

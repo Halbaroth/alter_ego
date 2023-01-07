@@ -1,4 +1,4 @@
 (library
  (name alter_ego)
  (modules lib)
- (libraries alter_ego__std alter_ego__dpll alter_ego__cdcl))
+ (libraries alter_ego__std alter_ego__sat alter_ego__ast))

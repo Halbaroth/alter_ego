@@ -1,6 +1,6 @@
 open Base
 
-module Make (Logic : Alter_ego__std.Logic.S) = struct
+module Make (Logic : Alter_ego__ast.Logic.S) = struct
   open Logic
 
   type t = Literal.set
@@ -12,5 +12,5 @@ module Make (Logic : Alter_ego__std.Logic.S) = struct
   let add_clause _ _ = initial
   let add_form _ _ = initial
   let sat _ = Unsat
-  let bcp t = t
+  let _bcp t = t
 end

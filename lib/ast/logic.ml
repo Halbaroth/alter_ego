@@ -1,3 +1,5 @@
+module Util = Alter_ego__std.Util
+
 open Base
 
 module type Atom = sig

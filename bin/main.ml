@@ -24,7 +24,7 @@ module Atom = struct
   let show = Std.Util.show_of_pp pp
 end
 
-module Logic = Std.Logic.Make (Atom)
+module Logic = Ast.Logic.Make (Atom)
 
 let () =
   let open Logic in

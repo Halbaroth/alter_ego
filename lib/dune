@@ -1,0 +1,4 @@
+(library
+ (name alter_ego)
+ (modules lib)
+ (libraries alter_ego__std))
